@@ -1,0 +1,1470 @@
+# Pixel Watch Claude Code Remote
+
+## 実装仕様書 v0.2
+
+## 1. 目的
+
+Windows PC上で動作するClaude Codeの重要操作を、Pixel Watch経由で安全に確認・通知・制御できる仕組みを作る。
+
+### 1.1 ゴール
+
+* Claude Codeの権限承認要求をリモートで確認・承認／拒否する
+* Claude Codeの対話的入力要求に対してPixel Watchから回答する
+* Pixel Watchの音声・定型文からClaude Codeにプロンプトを送信する
+* システム状態をPixel Watchで確認できる
+
+## 2. 対象と範囲
+
+### 2.1 対象環境
+
+* PC：Windows 11、VS Code、WSL2（Ubuntu推奨）、Python 3.12+
+* Android：Android 13以上、Kotlin、Jetpack Compose
+* Wear OS：Wear OS 4以上、Pixel Watch 2以降、Jetpack Compose for Wear OS
+
+### 2.2 対象システム
+
+* PC側中継サーバー：Python FastAPI + WebSocket
+* Androidスマートフォン：Wear OSデバイスとのペアリング中継、通知、認証管理
+* Pixel Watch：承認・回答・プロンプト送信・状態表示
+
+### 2.3 MVPで実装する機能
+
+* PCとスマートフォンのペアリング
+* Claude Code権限承認のリモート確認機能
+* Claude Codeの質問へのリモート回答機能
+* Pixel WatchからClaude Codeへプロンプト送信
+* 主要状態のWatch表示
+* 承認／質問時の通知とバイブレーション
+
+### 2.4 非対象
+
+* VS Code GUIの直接操作や画面転送
+* ファイル編集やGit差分の時計表示
+* 複数ユーザー共有機能
+* iPhone / Apple Watch対応
+* 一般公開クラウドサービスへの展開
+
+## 3. システム構成
+
+### 3.1 構成図
+
+```text
+Pixel Watch <-> Androidスマートフォン <-> PC中継サーバー <-> Claude Code
+```
+
+### 3.2 コンポーネント
+
+1. Pixel Watchアプリ
+   * 承認要求 / 質問表示
+   * 音声入力 / 定型文送信
+   * 状態表示
+   * 通知の受信とアクション
+2. Androidスマートフォンアプリ
+   * Wear OS Data LayerによるWatch連携
+   * PC中継サーバーとのTLS WebSocket通信
+   * 通知表示と再接続管理
+   * 認証情報保存
+3. PC中継サーバー
+   * Claude Code Hook連携
+   * WebSocket経由でスマホと通信
+   * tmux経由でClaude Codeへ入力を送信
+   * セッション / 状態管理
+
+## 4. 技術要件
+
+### 4.1 PC中継サーバー
+
+* FastAPIベースのWebSocketサーバー
+* SQLiteにペアリング情報・セッション状態を保存
+* Claude CodeのHooksイベントを受信してスマホへ通知
+* tmuxを使いClaude Codeプロセスへ文字入力を渡す
+* 各イベントをJSON形式でスマホへ配信
+
+### 4.2 Androidアプリ
+
+* Kotlin + Jetpack Compose
+* Wearable Data Layer API
+* OkHttp WebSocketクライアント
+* Room / Keystoreによる認証情報保存
+* WorkManagerによる再接続・バックグラウンド処理
+* 通知チャネルによる権限確認・質問通知
+
+### 4.3 Wear OSアプリ
+
+* Kotlin + Jetpack Compose for Wear OS
+* MessageClient / DataClientでスマホと通信
+* 音声入力Intentでプロンプトを取得
+* バイブレーション / 通知対応
+* 最小限の画面構成で操作しやすさを優先
+
+## 5. 機能要件
+
+### 5.1 ペアリング
+
+#### 要件
+
+* スマートフォンはPCの接続先情報を登録できる
+* 登録方法：QRコード読み取り / URLとワンタイムトークン手入力
+* ペアリング情報を安全に保存する
+  * PC識別子
+  * WebSocket接続先
+  * 認証トークン
+  * 表示名
+  * 公開鍵または証明書
+
+#### 受け入れ基準
+
+* スマホでPCを登録後、自動的にWebSocket接続を開始できる
+* 既存ペアリング情報で再接続ができる
+
+### 5.2 権限承認フロー
+
+#### 要件
+
+* Claude Codeの`PermissionRequest` HookをPC側が受け取る
+* この要求をスマホへ転送し、Watchへ通知する
+* Watch上で以下を表示する
+  * 要求種別
+  * 使用ツール名
+  * 実行内容の要約
+  * コマンド / 対象パス
+  * 作業ディレクトリ
+  * 発生時刻
+  * 危険度
+  * 承認 / 拒否
+  * 詳細表示ボタン（スマホへ誘導）
+* ユーザーの選択をPCへ返し、Claude CodeのHookへ回答する
+
+#### 受け入れ基準
+
+* Watchから承認/拒否操作を送信できる
+* スマホへ詳細表示を要求できる
+* 高危険度要求はワンタップ承認を禁止する
+
+### 5.3 質問回答フロー
+
+#### 要件
+
+* Claude Codeの入力待ち状態をWatchへ通知する
+* Watchで以下を受け付ける
+  * 選択肢1つ選択
+  * はい／いいえ
+  * 承認／拒否
+  * 定型文
+  * 音声入力
+  * スマホで回答
+* 可能な限りClaude Code Hookイベントで質問内容を取得する
+* Hookで判断できない場合、ターミナル出力から入力待ちを検知する
+* 検知ロジックは interface / adapter で実装する
+
+#### 受け入れ基準
+
+* Watchから回答を送信できる
+* Chrome端末の対話待ち状態が正常に検出できる
+* 文字列判定用の検出は抽象化されている
+
+### 5.4 プロンプト送信
+
+#### 要件
+
+* WatchからPCへプロンプト送信できる
+  * 音声入力
+  * 定型プロンプト
+  * 最近使用したプロンプト
+  * スマホ入力
+* PC側は受信したプロンプトをtmux経由でClaude Codeプロセスに送る
+* 任意文字列を直接シェルに埋め込まない
+* 一時ファイルまたは標準入力経由で送信する
+
+#### 受け入れ基準
+
+* Watchから送信した文字列がClaude Codeに入力される
+* コマンドインジェクション対策が実装されている
+
+### 5.5 状態表示
+
+#### 要件
+
+* Watch上で次を確認できる
+  * PCオフライン
+  * スマホ未接続
+  * Claude Code未起動
+  * Claude Code待機中
+  * Claude Code実行中
+  * 承認待ち
+  * 質問待ち
+  * エラー
+  * 応答送信済み
+
+#### 受け入れ基準
+
+* Watchの状態表示がPC / スマホ間の接続状態を反映する
+* 状態が定期的に更新される
+
+### 5.6 通知
+
+#### 要件
+
+* 承認要求 / 質問発生時にスマホ・Watchへ通知を送る
+* Watchでバイブレーションを鳴らす
+* 通知から以下を呼び出せる
+  * 承認
+  * 拒否
+  * 詳細表示
+* 高危険度操作は通知のワンタップ承認を禁止し、アプリ内詳細確認へ誘導する
+
+#### 受け入れ基準
+
+* スマホ通知が届き、Watch通知も発生する
+* 通知アクションが正しく機能する
+
+## 6. 非機能要件
+
+* 通信はTLSで保護する
+* WebSocketは再接続をサポートする
+* 認証情報は暗号化して保管する
+* Watch／スマホ間はWear OS Data Layerで最適化する
+* PC側のtmux操作は安全な入力転送で行う
+* 実装は拡張性を重視し、専用イベントの追加ができるようにする
+
+## 7. 実装ガイド
+
+### 7.1 PC中継サーバー
+
+* エンドポイント例
+  * `POST /pairing`：QRコード / URL登録情報の受け取り
+  * `GET /status`：接続状態取得
+  * `WebSocket /ws/{session}`：スマホとの双方向通信
+* Claude Code Hook連携はイベント駆動で実装する
+* tmux送信は次の流れ
+  * 一時ファイルに入力を書き込む
+  * `tmux load-buffer -b claude-remote-input <tmpfile>`
+  * `tmux paste-buffer -b claude-remote-input -t claude-remote`
+  * `tmux send-keys -t claude-remote Enter`
+
+### 7.2 Androidアプリ
+
+* Watchとの通信はMessageClientで即時操作、DataClientで状態同期
+* WebSocketはバックグラウンド再接続に対応させる
+* ペアリング情報はRoomに保存し、Keystoreで機密情報を保護する
+* 通知チャネルを2種類用意する
+  * 承認要求用
+  * 質問用
+
+### 7.3 Pixel Watchアプリ
+
+* 画面はできるだけシンプルにする
+* 優先画面
+  * 承認要求詳細
+  * 質問回答画面
+  * プロンプト送信画面
+  * 状態確認画面
+* 音声入力はIntent起動して文字列を取得する
+* 定型文 / 最近使用したプロンプトをリスト化する
+
+### 7.4 データモデル（例）
+
+* PairingInfo
+  * id
+  * displayName
+  * websocketUrl
+  * authToken
+  * publicKey
+* PermissionRequest
+  * requestId
+  * actionType
+  * toolName
+  * summary
+  * command
+  * workingDirectory
+  * dangerLevel
+  * timestamp
+* InteractionRequest
+  * requestId
+  * question
+  * choices
+  * inputType
+  * timeout
+
+## 8. 用語定義
+
+* Claude Code：VS Code上で動作するClaudeのローカル実行環境
+* PC中継サーバー：Windows PC上で動作し、スマホとClaude Codeをつなぐサーバー
+* ペアリング：スマートフォンがPC中継サーバーを登録し、通信できるようにする仕組み
+* Hook：Claude Codeの権限認可・入力要求を検出する仕組み
+* tmux：Claude Codeを実行するターミナルセッション管理ツール
+
+## 9. 次のステップ
+
+1. PC中継サーバーのAPI設計と最小WebSocketプロトコルを確定する
+2. AndroidアプリでペアリングとWebSocket接続を実装する
+3. Wear OSアプリでWatch上の承認・回答・送信画面を実装する
+4. Claude Code Hookとtmux送信の動作確認を行う
+
+* Pixel WatchからPCの任意シェルコマンドを直接実行する機能
+* Claude Code以外のAIエージェント対応
+* 時計単体でのPC直接通信
+
+---
+
+# 5. コンポーネント構成
+
+## 5.1 リポジトリ構成
+
+単一リポジトリとする。
+
+```text
+claude-watch-remote/
+├─ README.md
+├─ docs/
+│  ├─ architecture.md
+│  ├─ protocol.md
+│  ├─ security.md
+│  └─ setup.md
+├─ android/
+│  ├─ mobile/
+│  ├─ wear/
+│  ├─ shared/
+│  ├─ build.gradle.kts
+│  └─ settings.gradle.kts
+├─ pc-agent/
+│  ├─ pyproject.toml
+│  ├─ src/
+│  │  └─ claude_watch_agent/
+│  │     ├─ main.py
+│  │     ├─ api/
+│  │     ├─ auth/
+│  │     ├─ hooks/
+│  │     ├─ sessions/
+│  │     ├─ terminal/
+│  │     ├─ transport/
+│  │     └─ storage/
+│  ├─ tests/
+│  └─ scripts/
+├─ claude-hooks/
+│  ├─ permission_request.py
+│  ├─ notification.py
+│  └─ install_hooks.py
+└─ protocol/
+   ├─ schemas/
+   └─ examples/
+```
+
+## 5.2 Androidモジュール
+
+### mobile
+
+Androidスマートフォンアプリ。
+
+責務：
+
+* PCとのペアリング
+* PCとのWebSocket接続
+* Wear OS端末とのData Layer通信
+* 通知
+* 認証情報管理
+* メッセージキュー
+* 再接続
+* PC一覧
+* 詳細表示
+* ログ表示
+* 緊急切断
+
+### wear
+
+Pixel Watchアプリ。
+
+責務：
+
+* 待機中要求の一覧
+* 要求詳細
+* 承認／拒否
+* 質問への回答
+* 音声入力
+* 接続状態表示
+* 処理結果表示
+* タイムアウト表示
+
+### shared
+
+以下を共有する。
+
+* データモデル
+* シリアライズ
+* Data Layerのパス定義
+* エラーコード
+* 危険度分類
+* 共通ユーティリティ
+
+---
+
+# 6. 通信方式
+
+## 6.1 Watch－スマートフォン間
+
+Wear OS Data Layer APIを使用する。
+
+### MessageClientを使用する処理
+
+即時性が必要な小さいメッセージに使用する。
+
+```text
+/watch/action
+/watch/prompt
+/watch/request-detail
+/mobile/action-result
+/mobile/connection-state
+```
+
+例：
+
+```json
+{
+  "protocolVersion": 1,
+  "messageId": "01J...",
+  "type": "permission.response",
+  "requestId": "01J...",
+  "action": "allow",
+  "createdAt": "2026-07-23T12:00:00+09:00"
+}
+```
+
+### DataClientを使用する処理
+
+最新状態を同期・復元する用途に使用する。
+
+```text
+/state/connection
+/state/pending-requests
+/state/active-session
+```
+
+Data Layerはメッセージ到達を永続的に保証するキューとして扱わないこと。重要な操作には`messageId`とACKを使用し、スマートフォン側で再送制御する。
+
+## 6.2 スマートフォン－PC間
+
+TLS対応WebSocketを使用する。
+
+接続例：
+
+```text
+wss://<pc-host>:8765/ws/mobile
+```
+
+ローカル開発時のみ以下を許可する。
+
+```text
+ws://192.168.x.x:8765/ws/mobile
+```
+
+本番利用では平文WebSocketを禁止する。
+
+### WebSocketの責務
+
+* PC状態通知
+* Claude Codeセッション状態通知
+* 承認要求
+* 質問要求
+* 回答
+* プロンプト送信
+* ACK
+* Heartbeat
+* 再接続後の状態同期
+
+### Heartbeat
+
+```json
+{
+  "protocolVersion": 1,
+  "messageId": "01J...",
+  "type": "heartbeat",
+  "timestamp": "2026-07-23T12:00:00+09:00"
+}
+```
+
+* 送信間隔：30秒
+* 90秒応答なし：切断判定
+* 指数バックオフで再接続
+* 再接続間隔：1秒、2秒、4秒、8秒、最大30秒
+
+---
+
+# 7. 共通メッセージ形式
+
+すべてのメッセージはJSONとする。
+
+```json
+{
+  "protocolVersion": 1,
+  "messageId": "01J0ABC...",
+  "type": "permission.request",
+  "timestamp": "2026-07-23T12:00:00.000+09:00",
+  "pcId": "pc-01J...",
+  "sessionId": "session-01J...",
+  "requestId": "request-01J...",
+  "payload": {}
+}
+```
+
+## 7.1 permission.request
+
+```json
+{
+  "protocolVersion": 1,
+  "messageId": "01J...",
+  "type": "permission.request",
+  "timestamp": "2026-07-23T12:00:00+09:00",
+  "pcId": "pc-01",
+  "sessionId": "session-01",
+  "requestId": "request-01",
+  "payload": {
+    "toolName": "Bash",
+    "toolInput": {
+      "command": "git status"
+    },
+    "workingDirectory": "/home/user/project",
+    "summary": "Gitリポジトリの状態を確認します",
+    "riskLevel": "low",
+    "expiresAt": "2026-07-23T12:02:00+09:00",
+    "allowAlwaysAvailable": false
+  }
+}
+```
+
+## 7.2 permission.response
+
+```json
+{
+  "protocolVersion": 1,
+  "messageId": "01J...",
+  "type": "permission.response",
+  "timestamp": "2026-07-23T12:00:10+09:00",
+  "requestId": "request-01",
+  "payload": {
+    "decision": "allow"
+  }
+}
+```
+
+`decision`は以下のいずれか。
+
+```text
+allow
+deny
+cancel
+expired
+```
+
+MVPでは`alwaysAllow`を実装しない。永続的な許可ルールは誤操作時の影響が大きいため、将来機能とする。
+
+## 7.3 question.request
+
+```json
+{
+  "protocolVersion": 1,
+  "messageId": "01J...",
+  "type": "question.request",
+  "timestamp": "2026-07-23T12:00:00+09:00",
+  "requestId": "request-02",
+  "payload": {
+    "title": "実装方法を選択",
+    "question": "どちらの通信方式を使用しますか？",
+    "responseType": "single_choice",
+    "choices": [
+      {
+        "id": "websocket",
+        "label": "WebSocket"
+      },
+      {
+        "id": "polling",
+        "label": "HTTPポーリング"
+      }
+    ],
+    "allowVoiceInput": true,
+    "expiresAt": "2026-07-23T12:05:00+09:00"
+  }
+}
+```
+
+## 7.4 question.response
+
+```json
+{
+  "protocolVersion": 1,
+  "messageId": "01J...",
+  "type": "question.response",
+  "timestamp": "2026-07-23T12:00:20+09:00",
+  "requestId": "request-02",
+  "payload": {
+    "choiceId": "websocket",
+    "text": "WebSocketを使用してください"
+  }
+}
+```
+
+## 7.5 prompt.submit
+
+```json
+{
+  "protocolVersion": 1,
+  "messageId": "01J...",
+  "type": "prompt.submit",
+  "timestamp": "2026-07-23T12:01:00+09:00",
+  "sessionId": "session-01",
+  "payload": {
+    "text": "テストを実行して、失敗した場合は原因を調べて",
+    "source": "watch_voice",
+    "clientRequestId": "01J..."
+  }
+}
+```
+
+## 7.6 action.result
+
+```json
+{
+  "protocolVersion": 1,
+  "messageId": "01J...",
+  "type": "action.result",
+  "timestamp": "2026-07-23T12:01:01+09:00",
+  "requestId": "request-01",
+  "payload": {
+    "success": true,
+    "status": "accepted",
+    "message": "Claude Codeへ回答を送信しました"
+  }
+}
+```
+
+---
+
+# 8. Claude Code連携
+
+## 8.1 PermissionRequest Hook
+
+Claude Codeの`PermissionRequest` Hookを使用する。
+
+このHookはClaude Codeが権限ダイアログを表示しようとした際に実行され、HookのJSON出力によって許可または拒否を回答できる。
+
+Hookスクリプトは標準入力からイベントJSONを受け取る。
+
+概念実装：
+
+```python
+async def handle_permission_request(event: dict) -> dict:
+    request = await pc_agent.create_permission_request(event)
+
+    try:
+        response = await pc_agent.wait_for_response(
+            request_id=request.id,
+            timeout_seconds=120,
+        )
+    except TimeoutError:
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": {
+                    "behavior": "deny",
+                    "message": "Remote approval timed out"
+                }
+            }
+        }
+
+    behavior = "allow" if response.decision == "allow" else "deny"
+
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PermissionRequest",
+            "decision": {
+                "behavior": behavior,
+                "message": "Answered from Pixel Watch"
+            }
+        }
+    }
+```
+
+実際の入出力フィールドは、実装時点のClaude Code公式Hookスキーマに厳密に合わせること。固定的な想定で実装せず、受信した未知フィールドをログへ保存できる構造にする。
+
+## 8.2 Hookの失敗時動作
+
+以下のいずれかが発生した場合、自動承認しない。
+
+* スマートフォン未接続
+* Watch未接続
+* タイムアウト
+* 認証失敗
+* 不正な応答
+* requestId不一致
+* 既に処理済み
+* PCサーバー内部エラー
+
+原則として安全側に倒し、Claude Codeのローカル承認画面へフォールバックするか拒否する。
+
+フォールバック動作は設定可能にする。
+
+```yaml
+permission:
+  remote_timeout_seconds: 120
+  on_remote_unavailable: local_prompt
+  on_timeout: deny
+```
+
+候補値：
+
+```text
+local_prompt
+deny
+```
+
+`allow`は設定値として認めない。
+
+## 8.3 プロンプト入力
+
+Claude Codeへのプロンプト入力は`TerminalAdapter`を介する。
+
+```python
+class TerminalAdapter(Protocol):
+    async def is_alive(self) -> bool:
+        ...
+
+    async def send_text(self, text: str) -> None:
+        ...
+
+    async def send_key(self, key: str) -> None:
+        ...
+
+    async def capture_recent_output(self, lines: int) -> str:
+        ...
+```
+
+MVPでは`TmuxTerminalAdapter`を実装する。
+
+```python
+class TmuxTerminalAdapter:
+    session_name: str
+    target_pane: str
+```
+
+### 入力時の条件
+
+* Claude Codeが入力待ちであることを確認する
+* 承認待ち中に通常プロンプトを送らない
+* 送信テキストの最大長は4,000文字
+* NUL文字を拒否する
+* 改行は許可する
+* シェルへ直接文字列補間しない
+* 同時送信を排他制御する
+* `clientRequestId`で重複実行を防止する
+
+## 8.4 Claude Codeの状態検出
+
+状態モデル：
+
+```text
+OFFLINE
+STARTING
+IDLE
+RUNNING
+WAITING_PERMISSION
+WAITING_QUESTION
+ERROR
+```
+
+状態の判定優先順位：
+
+1. Claude Code Hooksから得られるイベント
+2. tmuxプロセスの存在
+3. ターミナル出力の監視
+4. 一定時間の無出力
+
+ターミナル出力解析はClaude Codeの表示変更で壊れる可能性があるため、独立モジュールとテストケースを用意する。
+
+---
+
+# 9. PC中継サーバー
+
+## 9.1 FastAPIエンドポイント
+
+```text
+GET  /health
+GET  /api/v1/status
+POST /api/v1/pair/start
+POST /api/v1/pair/complete
+POST /api/v1/hooks/permission
+POST /api/v1/prompts
+GET  /api/v1/sessions
+GET  /api/v1/requests
+WS   /ws/mobile
+```
+
+HookスクリプトはHTTP経由またはローカルIPC経由でPC中継サーバーへ要求を送る。
+
+本番ではHook用エンドポイントを`127.0.0.1`にのみ公開する。
+
+## 9.2 保存データ
+
+SQLiteへ以下を保存する。
+
+### paired_devices
+
+```text
+id
+device_name
+public_key
+token_hash
+created_at
+last_seen_at
+revoked_at
+```
+
+### sessions
+
+```text
+id
+tmux_target
+working_directory
+status
+created_at
+updated_at
+```
+
+### requests
+
+```text
+id
+session_id
+type
+payload_json
+status
+risk_level
+created_at
+expires_at
+resolved_at
+```
+
+### actions
+
+```text
+id
+request_id
+message_id
+device_id
+action
+result
+created_at
+```
+
+### prompt_history
+
+```text
+id
+session_id
+source
+text
+status
+created_at
+```
+
+プロンプト履歴は設定で保存無効にできること。
+
+---
+
+# 10. Androidスマートフォンアプリ
+
+## 10.1 画面
+
+### PC一覧画面
+
+* 登録済みPC
+* 接続状態
+* 最終接続時刻
+* Claude Code状態
+* PC追加
+* PC削除
+* 緊急切断
+
+### PC詳細画面
+
+* PC名
+* 接続URL
+* セッション一覧
+* 保留中の要求
+* 最近の操作
+* 接続テスト
+* Watch接続状態
+
+### 要求詳細画面
+
+時計に収まらない情報を表示する。
+
+* 完全なコマンド
+* 完全なファイルパス
+* ツール入力JSON
+* 作業ディレクトリ
+* 危険度の理由
+* 承認
+* 拒否
+
+### 設定画面
+
+* 通知
+* バイブレーション
+* 自動再接続
+* プロンプト履歴保存
+* 危険操作の時計承認可否
+* タイムアウト
+* ログ出力
+* ペアリング解除
+
+## 10.2 バックグラウンド動作
+
+常時WebSocketが必要なため、接続中はForeground Serviceを使用する。
+
+Foreground Serviceの通知を常時表示する。
+
+例：
+
+```text
+Claude Watch Remote
+PC「Desktop-01」に接続中
+```
+
+WorkManagerは以下に使用する。
+
+* 切断後の再接続補助
+* キューの再送
+* 定期的な整合性確認
+
+WorkManagerのみで常時WebSocketを維持しないこと。
+
+## 10.3 Watchへの転送
+
+PCから要求を受信したら以下を行う。
+
+1. Roomへ保存
+2. Android通知を表示
+3. DataClientで保留要求一覧を更新
+4. MessageClientでWatchへ即時通知
+5. WatchからACKを受信
+6. ACKがない場合は一定回数再送
+
+---
+
+# 11. Pixel Watchアプリ
+
+## 11.1 画面構成
+
+### ホーム画面
+
+表示内容：
+
+```text
+Claude Remote
+
+PC: 接続済み
+Claude: 実行中
+保留: 1件
+
+[保留中の要求]
+[音声で指示]
+[定型プロンプト]
+```
+
+### 承認画面
+
+表示内容：
+
+```text
+承認要求
+
+Bash
+git status
+
+危険度：低
+
+[承認]
+[拒否]
+[詳細をスマホで表示]
+```
+
+### 質問画面
+
+```text
+Claudeからの質問
+
+通信方式を選択
+
+[WebSocket]
+[HTTP]
+[音声で回答]
+```
+
+### 音声入力画面
+
+Wear OSの音声認識UIを起動し、認識結果を送信前に確認する。
+
+```text
+送信内容
+
+「テストを実行して」
+
+[送信]
+[やり直す]
+```
+
+音声認識結果を確認なしで自動送信しない。
+
+### 結果画面
+
+```text
+送信済み
+
+Claude Codeへ
+プロンプトを送信しました
+```
+
+## 11.2 Wear OS UI要件
+
+* 丸形画面を前提にする
+* 重要なボタンは画面下端へ密集させない
+* 誤タップ防止のため承認と拒否を十分離す
+* 承認は1タップ、危険操作は2段階確認
+* 長いコマンドは省略表示
+* 横スクロールを使用しない
+* 回転クラウンによるスクロールに対応
+* 1画面の情報量を抑える
+* 常時画面点灯を要求しない
+
+---
+
+# 12. 危険度分類
+
+PC側で権限要求を分類する。
+
+## low
+
+例：
+
+* ファイルの読み取り
+* `git status`
+* テスト実行
+* ディレクトリ一覧
+* ビルド
+* 静的解析
+
+時計から1タップ承認可能。
+
+## medium
+
+例：
+
+* ファイルの変更
+* パッケージインストール
+* Gitコミット
+* 外部ネットワークへのアクセス
+* プロセスの起動
+
+時計に確認画面を表示して承認。
+
+## high
+
+例：
+
+* `git push`
+* ファイル削除
+* `sudo`
+* 認証情報へのアクセス
+* システム設定変更
+* force push
+* データベース削除
+* デプロイ
+* 本番環境操作
+* ワイルドカードを含む再帰削除
+* `curl | sh`相当
+
+時計単体のワンタップ承認を禁止する。
+
+次のいずれかを要求する。
+
+* 時計上で長押し確認
+* スマートフォンで詳細確認
+* PC上でローカル承認
+
+MVPではhigh操作をスマートフォンまたはPCでのみ承認可能としてよい。
+
+---
+
+# 13. セキュリティ要件
+
+## 13.1 基本原則
+
+本システムは開発PC上でコード実行を許可するため、通常の通知アプリより高いセキュリティを必要とする。
+
+## 13.2 必須対策
+
+* 通信はTLSを使用
+* ペアリングにはワンタイムトークンを使用
+* 認証トークンを平文保存しない
+* Android側はKeystoreを使用
+* PC側はトークンのハッシュのみ保存
+* 全メッセージに一意な`messageId`を付与
+* 全要求に有効期限を付与
+* 使用済み要求を再利用できないようにする
+* requestIdとsessionIdを照合
+* リプレイ攻撃を防止
+* 連続失敗時に接続を遮断
+* ログへトークンを出力しない
+* ログへ環境変数や秘密情報を出力しない
+* Hook入力を信頼しない
+* Watchから受信した文字列をシェルへ直接展開しない
+* PCエージェントを管理者権限で実行しない
+* 外部インターネットへ直接ポート公開しない
+
+## 13.3 推奨ネットワーク構成
+
+初期版は以下のいずれかとする。
+
+### 同一LAN
+
+```text
+スマートフォン ─ Wi-Fi ─ PC
+```
+
+### Tailscale
+
+```text
+スマートフォン ─ Tailscale ─ PC
+```
+
+ルーターのポートフォワーディングによる一般公開は禁止する。
+
+## 13.4 緊急停止
+
+スマートフォンアプリに「緊急切断」を設ける。
+
+実行時：
+
+1. WebSocketを切断
+2. 認証セッションを無効化
+3. 保留要求をすべて拒否
+4. Pixel Watchへ切断状態を通知
+5. 必要に応じてPCエージェントを停止
+
+---
+
+# 14. タイムアウトと競合処理
+
+## 14.1 承認タイムアウト
+
+標準120秒。
+
+タイムアウト後に時計から承認されても処理しない。
+
+```json
+{
+  "success": false,
+  "status": "expired",
+  "message": "この要求は期限切れです"
+}
+```
+
+## 14.2 多重回答
+
+Watch、スマートフォン、PCから同時に回答された場合、最初に確定した回答のみ採用する。
+
+更新はデータベースの条件付き更新で実装する。
+
+```sql
+UPDATE requests
+SET status = 'allowed', resolved_at = CURRENT_TIMESTAMP
+WHERE id = ?
+  AND status = 'pending';
+```
+
+更新行数が0なら既に処理済みと判定する。
+
+## 14.3 重複メッセージ
+
+`messageId`を保存し、同じメッセージを二重処理しない。
+
+同じメッセージを再受信した場合は、前回と同じACKを返す。
+
+---
+
+# 15. エラー処理
+
+共通エラーコード：
+
+```text
+AUTH_FAILED
+DEVICE_REVOKED
+PC_OFFLINE
+PHONE_OFFLINE
+WATCH_OFFLINE
+CLAUDE_NOT_RUNNING
+SESSION_NOT_FOUND
+REQUEST_NOT_FOUND
+REQUEST_EXPIRED
+REQUEST_ALREADY_RESOLVED
+INVALID_MESSAGE
+UNSUPPORTED_PROTOCOL
+TERMINAL_BUSY
+PROMPT_TOO_LONG
+DELIVERY_FAILED
+INTERNAL_ERROR
+```
+
+ユーザー向けには内部例外をそのまま表示せず、短い日本語メッセージへ変換する。
+
+---
+
+# 16. ログ
+
+## 16.1 PC
+
+Pythonの構造化ログを使用する。
+
+```json
+{
+  "timestamp": "...",
+  "level": "INFO",
+  "event": "permission_request_created",
+  "requestId": "...",
+  "sessionId": "...",
+  "toolName": "Bash"
+}
+```
+
+## 16.2 Android
+
+Timberまたは標準Loggerを使用する。
+
+リリースビルドでは機密情報をログに出さない。
+
+## 16.3 監査ログ
+
+最低限以下を記録する。
+
+* 要求発生
+* 端末への配信
+* ユーザーの回答
+* 回答端末
+* Claude Codeへの反映結果
+* タイムアウト
+* 認証失敗
+* ペアリング解除
+
+---
+
+# 17. テスト要件
+
+## 17.1 PC単体テスト
+
+* Hook JSONの解析
+* allow応答
+* deny応答
+* タイムアウト
+* 重複回答
+* requestId不一致
+* WebSocket切断
+* tmuxへの日本語入力
+* 改行を含む入力
+* シェル特殊文字を含む入力
+* Claude Code未起動
+* SQLite競合更新
+* 危険度分類
+
+## 17.2 Android単体テスト
+
+* WebSocketメッセージ解析
+* 再接続
+* 重複排除
+* Roomへの保存
+* Watchへの転送
+* ACK処理
+* 期限切れ要求
+* 認証情報保存
+
+## 17.3 Wear OS UIテスト
+
+* 承認
+* 拒否
+* 二重タップ
+* 長いコマンド
+* 日本語表示
+* 音声入力キャンセル
+* Watch切断
+* 要求期限切れ
+* 小さい画面
+* 丸形画面
+* 回転クラウン
+
+## 17.4 結合テスト
+
+必須シナリオ：
+
+1. Claude Codeが`git status`の承認を要求
+2. Watchが振動
+3. 時計に要求を表示
+4. 時計で承認
+5. Claude Codeが続行
+6. 結果が時計へ表示される
+
+別シナリオ：
+
+1. 時計から音声入力
+2. スマートフォンへ転送
+3. PCへ転送
+4. tmux内のClaude Codeへ入力
+5. Claude Codeが処理を開始
+6. 状態が`RUNNING`になる
+
+異常系：
+
+1. 要求送信直後にスマートフォンをオフライン
+2. タイムアウト
+3. Claude Code側は自動承認されない
+4. 再接続後に期限切れとして表示される
+
+---
+
+# 18. 開発フェーズ
+
+## Phase 1：通信の最小実証
+
+* PC FastAPIサーバー
+* AndroidスマートフォンとのWebSocket
+* Watch－スマートフォン間MessageClient
+* Watchにテストメッセージ表示
+* Watchのボタン回答をPCへ返す
+
+完了条件：
+
+```text
+PC → Smartphone → Watch → Smartphone → PC
+```
+
+の往復通信が動作する。
+
+## Phase 2：Claude Code承認連携
+
+* PermissionRequest Hook
+* 要求のモデル化
+* Watch承認画面
+* allow／deny応答
+* タイムアウト
+* 重複回答防止
+
+完了条件：
+
+Claude Codeの実際の承認要求を時計で処理できる。
+
+## Phase 3：プロンプト入力
+
+* tmuxアダプター
+* 時計の音声入力
+* プロンプト確認
+* PCへの送信
+* Claude Codeへの安全な貼り付け
+* 実行状態表示
+
+## Phase 4：実用化
+
+* Foreground Service
+* 再接続
+* ACK
+* Room
+* 通知
+* ペアリング
+* TLS
+* Tailscale環境
+* 監査ログ
+
+## Phase 5：拡張
+
+* 複数PC
+* 複数Claude Codeセッション
+* 定型プロンプト編集
+* コンプリケーション
+* Tile
+* スマートフォンなしの直接通信
+* Claude Code以外のエージェント対応
+
+---
+
+# 19. 実装上の重要事項
+
+1. WatchからPCへ直接通信させず、MVPでは必ずスマートフォンを中継する。
+2. Data Layer APIをクラウド通信の代替として扱わない。
+3. Claude Code承認には`PermissionRequest` Hookを優先する。
+4. Claude Codeへ送る任意テキストをシェルコマンドへ直接埋め込まない。
+5. 接続断やタイムアウト時に自動承認してはならない。
+6. 高危険度操作を時計の単純なワンタップだけで許可しない。
+7. UI文字列と内部プロトコルを分離する。
+8. プロトコルにバージョン番号を付ける。
+9. PC、スマートフォン、Watchの各層を個別にテストできるようにする。
+10. Claude Codeの非公開内部実装や画面文字列への依存を最小限にする。
+11. Claude Code公式Hook仕様が実装時に変更されている可能性があるため、実装開始時に公式ドキュメントの最新スキーマを確認する。
+12. MVP完成までは機能を増やさず、まず承認要求の一往復を成立させる。
+
+---
+
+# 20. MVP受け入れ基準
+
+以下をすべて満たしたらMVP完成とする。
+
+* AndroidスマートフォンとPixel Watchが接続できる
+* スマートフォンとPCがWebSocket接続できる
+* Claude Codeの承認要求がWatchへ5秒以内に表示される
+* Watchから承認できる
+* Watchから拒否できる
+* 期限切れ要求を承認できない
+* 同じ要求が二重実行されない
+* Watchの音声入力をClaude Codeへ送信できる
+* 日本語プロンプトを正しく送信できる
+* PCまたはスマートフォンが切断された際に自動承認されない
+* high危険度の要求はWatchから即時承認できない
+* 認証情報が平文保存されない
+* セットアップ手順がREADMEに記載されている
+* PC、スマートフォン、Watchの基本テストが存在する
+
+---
+
+# 21. 最初に実装するタスク
+
+実装エージェントは、最初に以下を実施すること。
+
+1. モノレポを作成する
+2. Androidの`mobile`、`wear`、`shared`モジュールを作成する
+3. PC側FastAPIプロジェクトを作成する
+4. 共通プロトコルv1を定義する
+5. PC－スマートフォン間WebSocketを実装する
+6. スマートフォン－Watch間MessageClientを実装する
+7. PCから送ったダミー承認要求をWatchへ表示する
+8. Watchの承認／拒否をPCのログへ返す
+9. この通信経路の自動テストを作成する
+10. その後にClaude Code Hookを接続する
+
+最初から音声入力、複数PC、クラウド中継、Tile、コンプリケーションを実装しないこと。
+
+まず以下の縦方向スライスを完成させる。
+
+```text
+ダミー承認要求
+    ↓
+PC FastAPI
+    ↓
+Androidスマートフォン
+    ↓
+Pixel Watch
+    ↓
+承認ボタン
+    ↓
+Androidスマートフォン
+    ↓
+PC FastAPI
+    ↓
+結果をログ表示
+```
+
+この縦方向スライスの動作確認後、Claude Codeの`PermissionRequest` Hookへ置き換えること。

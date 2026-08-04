@@ -1,0 +1,9 @@
+# Copy to config.yaml (or point CLAUDE_WATCH_HOOK_CONFIG at your own path).
+# Requires PyYAML; if it isn't installed the hook scripts fall back to the
+# defaults baked into claude-hooks/_common.py.
+permission:
+  base_url: "http://127.0.0.1:8000"
+  remote_timeout_seconds: 120
+  on_remote_unavailable: local_prompt # local_prompt | deny
+  on_timeout: deny # local_prompt | deny
+  poll_interval_seconds: 1.0

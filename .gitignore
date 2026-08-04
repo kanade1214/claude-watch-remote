@@ -1,0 +1,24 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Runtime data (SQLite DB is generated on first run)
+data/*.db
+
+# Claude Code hook local config (copy from config.example.yaml)
+claude-hooks/config.yaml
+
+# Android / Gradle
+android/.gradle/
+android/**/build/
+android/local.properties
+android/**/*.iml
+android/.idea/
+android/**/.cxx/
+android/captures/
+
+# OS
+.DS_Store
+Thumbs.db
