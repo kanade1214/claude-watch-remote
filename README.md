@@ -10,7 +10,7 @@ Windows PC上で動作するClaude CodeとPixel WatchをAndroidスマートフ�
 
 ## 実装状況
 
-現在実装済みなのはPC中継サーバー（Python/FastAPI）と、それに向けたClaude Code Hookスクリプトです。Android / Wear OSアプリは `android/` に初期スケルトンのみあり、この中継サーバーの新プロトコルへの追従はまだ行っていません（後述）。
+PC中継サーバー（Python/FastAPI）、Claude Code Hookスクリプト、Android/Wear OSアプリ（`android/`）まで実装済み。Android側は実機（Pixel 10 + Pixel Watch 4）でのペアリング・通知・承認/回答フローを確認済み（詳細は後述）。**未確認なのはPC側のtmux経由での実際のClaude Code入力**——これはtmuxの無い環境で開発したため。
 
 ### PC中継サーバー
 
@@ -104,26 +104,35 @@ python claude-hooks/install_hooks.py             # ~/.claude/settings.json へ�
 
 ## Android / Wear OS
 
-`android/` のKotlinコードも新プロトコル（`/ws/mobile`、メッセージエンベロープ、`Authorization: Bearer` 認証）に合わせて更新しました。**この環境にはAndroid SDK / JDKが無く、ビルド・実機検証は一度もできていません**。次にAndroid Studioが使える環境でビルドし、コンパイルエラーやAPIの版差異を洗い出すのが必須の次ステップです。
+`android/` は新プロトコル（`/ws/mobile`、メッセージエンベロープ、`Authorization: Bearer` 認証）に対応済みで、**実機（Pixel 10 + Pixel Watch 4）でビルド・インストール・動作確認済み**です。JDK 17 / Android SDK cmdline-tools / Gradle wrapperはこのリポジトリの外（開発機のユーザーローカル環境）に別途セットアップした前提です。
 
-### 実装した範囲（縦方向スライス優先、仕様21章の方針に合わせた）
+### 実装した範囲
 
 * **スマホ (`android/app`)**
   * `protocol/Envelope.kt` — メッセージエンベロープのKotlin版
   * `data/DeviceCredentialStore.kt` — `EncryptedSharedPreferences`（Keystore裏付け）でPCのURLとデバイストークンを保存（仕様13.2）
   * `network/RelayApi.kt` — `pair/start` → `pair/complete` → `prompts` の新REST API
   * `network/WebSocketClient.kt` — `/ws/mobile?token=...` への接続、エンベロープ送受信
-  * `wearable/WearableBridge.kt` / `WearableCommandProcessor.kt` — PCからの`permission.request`/`question.request`を`DataClient`の`/state/pending-requests`でWatchへ同期し、Watchからの`/watch/action`・`/watch/prompt`をPCへ中継
-  * `viewmodel/MainViewModel.kt`（ペアリング・HTTPフォールバック）、`viewmodel/WebSocketViewModel.kt`（WebSocket・Watch中継）、`ui/MainScreen.kt`（ペアリング画面＋保留要求への承認/拒否/回答UI）
+  * `service/RelayConnectionService.kt` — WebSocket接続を保持するForeground Service（仕様10.2）。ここが`permission.request`/`question.request`受信の起点
+  * `notifications/NotificationHelper.kt` / `NotificationActionReceiver.kt` — 承認要求・質問を**バイブレーション付きの通知**として表示し、通知の承認/拒否/選択肢ボタンから直接応答できる（仕様5.6/10.3）。高危険度要求は通知にワンタップ承認ボタンを出さない（仕様12章）
+  * `wearable/WearableBridge.kt` / `WearableCommandProcessor.kt` — 保留要求を`DataClient`の`/state/pending-requests`でWatchアプリ内表示用に同期し、Watchアプリからの`/watch/action`・`/watch/prompt`をPCへ中継（アプリ内のフォールバック画面用。主経路は下記の通知）
+  * `ui/MainScreen.kt` — ペアリング画面＋保留要求一覧（フォールバック表示）
 * **Watch (`android/wear`)**
   * `protocol/Envelope.kt` — 同上のWatch版
   * `network/WearableClient.kt` — `/watch/action`・`/watch/prompt`・`/watch/request-detail`をスマホへ送信（**WatchはPCへ直接通信しない**、仕様19章 項目1）
-  * `network/WatchDataListener.kt` / `WatchMessageListener.kt` — スマホからの`/state/pending-requests`・`/mobile/action-result`・`/mobile/connection-state`を受信
-  * `viewmodel/MainViewModel.kt` / `ui/MainScreen.kt` — 保留要求表示、承認/拒否、選択肢回答、音声入力（`RecognizerIntent`、送信前に確認画面を必須化）、定型プロンプト、高危険度要求は時計単体承認を禁止してスマホ確認へ誘導
+  * `network/WatchDataListener.kt`（起動時に現在の保留要求を`fetchCurrent`で取得＋以後の変化を購読）/ `WatchMessageListener.kt`
+  * `viewmodel/MainViewModel.kt` / `ui/MainScreen.kt` — 主用途は**音声入力・定型文でのプロンプト送信**（送信前に確認画面を必須化）。承認/質問はWear OSの通知ブリッジ機能で自動的にWatchへ転送される通知から操作する想定で、アプリ内の保留要求画面はフォールバック
 
-### 既知の制約・未実装
+### 実機で検証済み
 
-* ビルド未検証。Wear Compose Material / Data Layer APIのバージョン差異でコンパイルエラーが出る可能性が高い
-* PC一覧・要求詳細・設定画面、Foreground Service、Room、通知チャネル、ACK再送、複数PC対応は未実装（仕様10章の一部）
+* ペアリング（`pair/start`→`pair/complete`）、`/ws/mobile`の接続維持（Foreground Service）
+* 承認要求・質問通知がスマホとWatch（Wear OS標準の通知ブリッジ経由、Watch側コード不要）の両方に届き、バイブレーションと承認/拒否/選択肢ボタンが機能する
+* 通知のボタン操作がサーバーまで届き、`requests`テーブルが正しく`allowed`/`answered`に遷移する
+* 期限切れ（120秒）の要求が承認/回答できないこと
+
+### 未検証（Ubuntu機側で確認すべきこと）
+
+* **`terminal.send_text`が実際にtmux経由でClaude Codeへ文字を打ち込むか**（このリポジトリの開発・検証はtmuxの無いWindows機で行ったため、`CLAUDE_NOT_RUNNING`が返ることまでしか確認できていない）
+* `claude-hooks/permission_request.py`・`notification.py`が本物のClaude Code Hookイベントから正しく呼ばれるか（公式Hookスキーマは推測に基づくため要突き合わせ、仕様11章項目11）
+* PC一覧・要求詳細・設定画面、Room、ACK再送、複数PC対応は未実装（仕様10章の一部）
 * ペアリングはこの端末から直接`pair/start`→`pair/complete`を呼ぶ簡易フロー。QRコード読み取りは未実装
-* Watchの「スマホで確認」は`/watch/request-detail`を送るだけで、スマホ側に詳細表示画面はまだ無い（要求は一覧に出るので回答自体は可能）
