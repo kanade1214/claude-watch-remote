@@ -1,5 +1,5 @@
 <resources>
-    <style name="Theme.ClaudeCodeRemoteWear" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+    <style name="Theme.ClaudeCodeRemoteWear" parent="android:Theme.DeviceDefault">
         <item name="android:statusBarColor">#3700B3</item>
         <item name="android:navigationBarColor">#000000</item>
     </style>

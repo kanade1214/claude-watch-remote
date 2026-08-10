@@ -1,10 +1,10 @@
 package com.example.claudecoderemote.wear.ui.theme
 
-import androidx.compose.material.MaterialTheme
-import androidx.compose.material.darkColors
 import androidx.compose.runtime.Composable
+import androidx.wear.compose.material.Colors
+import androidx.wear.compose.material.MaterialTheme
 
-private val DarkColorPalette = darkColors(
+private val WearColorPalette = Colors(
     primary = Purple200,
     primaryVariant = Purple700,
     secondary = Teal200
@@ -13,9 +13,7 @@ private val DarkColorPalette = darkColors(
 @Composable
 fun ClaudeCodeRemoteWearTheme(content: @Composable () -> Unit) {
     MaterialTheme(
-        colors = DarkColorPalette,
-        typography = androidx.compose.material.Typography(),
-        shapes = androidx.compose.material.Shapes(),
+        colors = WearColorPalette,
         content = content
     )
 }
