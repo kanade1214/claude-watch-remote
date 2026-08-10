@@ -19,7 +19,11 @@ import org.json.JSONObject
 object NotificationHelper {
     const val CHANNEL_PERMISSION = "permission_requests"
     const val CHANNEL_QUESTION = "questions"
-    const val CHANNEL_ASSISTANT = "assistant_messages"
+    // A channel's importance and vibration are fixed at creation — later
+    // createNotificationChannel calls cannot change them — so changing this
+    // channel's behaviour means retiring the old id for a new one.
+    const val CHANNEL_ASSISTANT = "assistant_messages_v2"
+    private const val CHANNEL_ASSISTANT_RETIRED = "assistant_messages"
     const val CHANNEL_SERVICE = "relay_service"
 
     const val ACTION_RESPOND = "com.example.claudecoderemote.android.ACTION_RESPOND"
@@ -40,14 +44,13 @@ object NotificationHelper {
                 enableVibration(true)
             }
         )
+        manager.deleteNotificationChannel(CHANNEL_ASSISTANT_RETIRED)
         manager.createNotificationChannel(
-            // Claude replies land many times per session, so unlike the two
-            // channels above this one is deliberately quiet: visible on the
-            // watch, no buzz. Users who want haptics can raise the channel
-            // in Android's notification settings.
-            NotificationChannel(CHANNEL_ASSISTANT, "Claudeの応答", NotificationManager.IMPORTANCE_DEFAULT).apply {
-                enableVibration(false)
-                setSound(null, null)
+            // Alerting like the other two: the point of the project is to
+            // notice things while away from the PC, and a silent channel made
+            // replies easy to miss entirely.
+            NotificationChannel(CHANNEL_ASSISTANT, "Claudeの応答", NotificationManager.IMPORTANCE_HIGH).apply {
+                enableVibration(true)
             }
         )
         manager.createNotificationChannel(
@@ -148,9 +151,12 @@ object NotificationHelper {
             .setContentTitle("Claudeの応答")
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setAutoCancel(true)
-            .setOnlyAlertOnce(true)
+            // Deliberately NOT setOnlyAlertOnce: each session reuses one
+            // notification id (below), and onlyAlertOnce would make every
+            // reply after the first update that slot in complete silence.
             .setContentIntent(openAppIntent(context))
             .build()
 

@@ -119,7 +119,7 @@ python claude-hooks/install_hooks.py             # ~/.claude/settings.json へ�
   * `network/RelayApi.kt` — `pair/start` → `pair/complete` → `prompts` の新REST API
   * `network/WebSocketClient.kt` — `/ws/mobile?token=...` への接続、エンベロープ送受信
   * `service/RelayConnectionService.kt` — WebSocket接続を保持するForeground Service（仕様10.2）。ここが`permission.request`/`question.request`受信の起点
-  * `notifications/NotificationHelper.kt` / `NotificationActionReceiver.kt` — 承認要求・質問を**バイブレーション付きの通知**として表示し、通知の承認/拒否/選択肢ボタンから直接応答できる（仕様5.6/10.3）。高危険度要求は通知にワンタップ承認ボタンを出さない（仕様12章）。Claudeの応答（`assistant.message`）は別チャンネル「Claudeの応答」で`BigTextStyle`表示。応答は1セッション中に何度も届くので**既定でバイブレーション・音なし**（時計には出るが震えない）にしてあり、セッションごとに1枠を上書きするので通知が積み上がらない。震わせたい場合はAndroidの通知設定でこのチャンネルの重要度を上げる
+  * `notifications/NotificationHelper.kt` / `NotificationActionReceiver.kt` — 承認要求・質問を**バイブレーション付きの通知**として表示し、通知の承認/拒否/選択肢ボタンから直接応答できる（仕様5.6/10.3）。高危険度要求は通知にワンタップ承認ボタンを出さない（仕様12章）。Claudeの応答（`assistant.message`）は別チャンネル「Claudeの応答」で`BigTextStyle`表示。承認要求と同じく`IMPORTANCE_HIGH`＋バイブありで、セッションごとに1枠を上書きするので通知が積み上がらない。**`setOnlyAlertOnce`は意図的に付けていない**——1枠を使い回す設計なので、付けると2回目以降の応答が無音で差し替わるだけになり、気づけなくなる。チャンネルの重要度・バイブは作成後に変更できないため、挙動を変えるときはチャンネルIDを更新して旧IDを`deleteNotificationChannel`する（`CHANNEL_ASSISTANT_RETIRED`）
   * `wearable/WearableBridge.kt` / `WearableCommandProcessor.kt` — 保留要求を`DataClient`の`/state/pending-requests`でWatchアプリ内表示用に同期し、Watchアプリからの`/watch/action`・`/watch/prompt`をPCへ中継（アプリ内のフォールバック画面用。主経路は下記の通知）
   * `ui/MainScreen.kt` — ペアリング画面＋保留要求一覧（フォールバック表示）
 * **Watch (`android/wear`)**
