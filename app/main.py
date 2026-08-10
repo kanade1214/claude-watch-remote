@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from app.errors import RelayError
 from app.protocol import (
+    AssistantMessagePayload,
     Envelope,
     HeartbeatPayload,
     PermissionRequestPayload,
@@ -21,6 +22,8 @@ from app.protocol import (
 )
 from app.risk import classify_risk
 from app.schemas import (
+    AssistantMessageHookEvent,
+    BroadcastResponse,
     HookDecisionResponse,
     PairCompleteRequest,
     PairCompleteResponse,
@@ -41,6 +44,7 @@ from app.terminal import TmuxTerminalAdapter, validate_prompt_text
 DEFAULT_SESSION_ID = "default"
 DEFAULT_TMUX_SESSION = os.environ.get("CLAUDE_WATCH_TMUX_SESSION", "claude-remote")
 PERMISSION_TIMEOUT_SECONDS = int(os.environ.get("CLAUDE_WATCH_PERMISSION_TIMEOUT", "120"))
+ASSISTANT_MESSAGE_MAX_CHARS = int(os.environ.get("CLAUDE_WATCH_MESSAGE_MAX_CHARS", "500"))
 PC_ID = os.environ.get("CLAUDE_WATCH_PC_ID") or f"pc-{uuid.uuid4().hex[:8]}"
 
 
@@ -301,6 +305,38 @@ async def hook_question_request(event: QuestionHookEvent) -> HookDecisionRespons
     await manager.broadcast(envelope)
 
     return HookDecisionResponse(decision="pending", requestId=request_id, message="polling required")
+
+
+@app.post("/api/v1/hooks/assistant-message", response_model=BroadcastResponse)
+async def hook_assistant_message(event: AssistantMessageHookEvent) -> BroadcastResponse:
+    """Called by the local Stop hook script once Claude finishes replying.
+
+    Display-only, so this is the one hook endpoint that creates no row in
+    `requests`: there is no decision to wait for and nothing to expire, and
+    the hook script does not poll afterwards. Claude has stopped talking by
+    definition here, hence the IDLE state transition.
+    """
+    text = event.text.strip()
+    if not text:
+        raise RelayError("INVALID_MESSAGE", "text is empty")
+
+    payload = AssistantMessagePayload(
+        text=text[:ASSISTANT_MESSAGE_MAX_CHARS],
+        truncated=len(text) > ASSISTANT_MESSAGE_MAX_CHARS,
+        fullLength=len(text),
+        workingDirectory=event.workingDirectory,
+    )
+    state_tracker.set_state("IDLE")
+
+    await manager.broadcast(
+        envelope_for(
+            "assistant.message",
+            payload,
+            pc_id=PC_ID,
+            session_id=event.sessionId or DEFAULT_SESSION_ID,
+        )
+    )
+    return BroadcastResponse(status="broadcast", delivered=manager.count())
 
 
 @app.post("/api/v1/prompts", response_model=SimpleResponse)

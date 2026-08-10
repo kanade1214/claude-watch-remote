@@ -19,6 +19,7 @@ import org.json.JSONObject
 object NotificationHelper {
     const val CHANNEL_PERMISSION = "permission_requests"
     const val CHANNEL_QUESTION = "questions"
+    const val CHANNEL_ASSISTANT = "assistant_messages"
     const val CHANNEL_SERVICE = "relay_service"
 
     const val ACTION_RESPOND = "com.example.claudecoderemote.android.ACTION_RESPOND"
@@ -37,6 +38,16 @@ object NotificationHelper {
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL_QUESTION, "Claudeからの質問", NotificationManager.IMPORTANCE_HIGH).apply {
                 enableVibration(true)
+            }
+        )
+        manager.createNotificationChannel(
+            // Claude replies land many times per session, so unlike the two
+            // channels above this one is deliberately quiet: visible on the
+            // watch, no buzz. Users who want haptics can raise the channel
+            // in Android's notification settings.
+            NotificationChannel(CHANNEL_ASSISTANT, "Claudeの応答", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                enableVibration(false)
+                setSound(null, null)
             }
         )
         manager.createNotificationChannel(
@@ -114,6 +125,40 @@ object NotificationHelper {
         }
 
         notify(context, requestId, builder.build())
+    }
+
+    /**
+     * Shows the text Claude just replied with. Display-only — an
+     * `assistant.message` carries no requestId and has no action buttons,
+     * so BigTextStyle is what makes it useful on a watch face.
+     */
+    fun notifyAssistantMessage(context: Context, envelope: JSONObject) {
+        val payload = Envelope.payload(envelope)
+        val text = payload.optString("text")
+        if (text.isBlank()) return
+
+        val body = if (payload.optBoolean("truncated")) {
+            "$text\n\n… (全${payload.optInt("fullLength")}文字)"
+        } else {
+            text
+        }
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ASSISTANT)
+            .setSmallIcon(android.R.drawable.ic_menu_view)
+            .setContentTitle("Claudeの応答")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(openAppIntent(context))
+            .build()
+
+        // One slot per session, replaced on every reply — a watch should not
+        // accumulate a stack of every response Claude has ever produced.
+        val sessionId = envelope.optString("sessionId", "default")
+        context.getSystemService(NotificationManager::class.java)
+            .notify("assistant:$sessionId".hashCode(), notification)
     }
 
     fun cancel(context: Context, requestId: String) {

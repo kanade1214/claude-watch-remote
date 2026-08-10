@@ -7,6 +7,7 @@ Windows PC上で動作するClaude CodeとPixel WatchをAndroidスマートフ�
 * Claude Codeの権限承認要求をリモートで確認・承認／拒否できるようにする
 * 質問入力待ち状態をPixel Watchから回答できるようにする
 * Pixel Watchから音声・定型文を送信してClaude Codeへ入力できるようにする
+* Claudeが応答を出し終えたら、その本文をPixel Watchに表示する
 
 ## 実装状況
 
@@ -26,7 +27,8 @@ PC中継サーバー（Python/FastAPI）、Claude Code Hookスクリプト、And
 
 * `claude-hooks/permission_request.py` — `PermissionRequest` Hook。PC中継サーバーへ要求を送り、承認/拒否をポーリングで待つ
 * `claude-hooks/notification.py` — `Notification` Hook。入力待ち状態を質問要求として登録する（fire-and-forget）
-* `claude-hooks/install_hooks.py` — 上記2つを`settings.json`へ登録するユーティリティ
+* `claude-hooks/stop.py` — `Stop` Hook。Claudeが応答し終わった本文を取り出してWatchへ送る（fire-and-forget）。Stopイベント自体は本文を持たず`transcript_path`だけを渡してくるため、そのJSONLを末尾から遡って直近のassistantターンのテキストを復元する
+* `claude-hooks/install_hooks.py` — 上記3つを`settings.json`へ登録するユーティリティ
 * `claude-hooks/config.example.yaml` — タイムアウトやフォールバック動作の設定例
 
 **注意**：Claude Code公式Hookスキーマは実装時点の推測に基づいています。実際の運用前に最新の公式ドキュメントと突き合わせてください（仕様11章 項目11）。
@@ -40,6 +42,7 @@ POST /api/v1/pair/start
 POST /api/v1/pair/complete
 POST /api/v1/hooks/permission
 POST /api/v1/hooks/question       (拡張: 質問フロー用)
+POST /api/v1/hooks/assistant-message  (拡張: 応答表示用)
 POST /api/v1/prompts
 GET  /api/v1/sessions
 GET  /api/v1/requests
@@ -48,6 +51,8 @@ WS   /ws/mobile
 ```
 
 `/api/v1/hooks/permission` と `/api/v1/hooks/question` は要求を作成して即座に `{"decision": "pending", "requestId": ...}` を返します。Hookスクリプトは `GET /api/v1/requests/{id}` をポーリングして解決を待ちます（仕様の同期待ち擬似コードをDB駆動のポーリングに置き換えたものです）。
+
+`/api/v1/hooks/assistant-message` は表示専用なので、他の2つと違って `requests` テーブルに行を作らず（承認も期限切れも無い）、接続中デバイスへ配信した時点で `{"status": "broadcast", "delivered": <接続数>}` を返します。Hookスクリプトはポーリングしません。本文は時計の画面に合わせて既定500文字で切り詰められます（`CLAUDE_WATCH_MESSAGE_MAX_CHARS` で変更可、切り詰めた場合は `truncated` と元の文字数 `fullLength` が付きます）。
 
 `POST /api/v1/prompts` と `WS /ws/mobile` はペアリング済みデバイスの認証（`Authorization: Bearer <deviceToken>` またはWebSocketの `?token=` クエリ）が必要です。
 
@@ -114,7 +119,7 @@ python claude-hooks/install_hooks.py             # ~/.claude/settings.json へ�
   * `network/RelayApi.kt` — `pair/start` → `pair/complete` → `prompts` の新REST API
   * `network/WebSocketClient.kt` — `/ws/mobile?token=...` への接続、エンベロープ送受信
   * `service/RelayConnectionService.kt` — WebSocket接続を保持するForeground Service（仕様10.2）。ここが`permission.request`/`question.request`受信の起点
-  * `notifications/NotificationHelper.kt` / `NotificationActionReceiver.kt` — 承認要求・質問を**バイブレーション付きの通知**として表示し、通知の承認/拒否/選択肢ボタンから直接応答できる（仕様5.6/10.3）。高危険度要求は通知にワンタップ承認ボタンを出さない（仕様12章）
+  * `notifications/NotificationHelper.kt` / `NotificationActionReceiver.kt` — 承認要求・質問を**バイブレーション付きの通知**として表示し、通知の承認/拒否/選択肢ボタンから直接応答できる（仕様5.6/10.3）。高危険度要求は通知にワンタップ承認ボタンを出さない（仕様12章）。Claudeの応答（`assistant.message`）は別チャンネル「Claudeの応答」で`BigTextStyle`表示。応答は1セッション中に何度も届くので**既定でバイブレーション・音なし**（時計には出るが震えない）にしてあり、セッションごとに1枠を上書きするので通知が積み上がらない。震わせたい場合はAndroidの通知設定でこのチャンネルの重要度を上げる
   * `wearable/WearableBridge.kt` / `WearableCommandProcessor.kt` — 保留要求を`DataClient`の`/state/pending-requests`でWatchアプリ内表示用に同期し、Watchアプリからの`/watch/action`・`/watch/prompt`をPCへ中継（アプリ内のフォールバック画面用。主経路は下記の通知）
   * `ui/MainScreen.kt` — ペアリング画面＋保留要求一覧（フォールバック表示）
 * **Watch (`android/wear`)**
@@ -129,10 +134,14 @@ python claude-hooks/install_hooks.py             # ~/.claude/settings.json へ�
 * 承認要求・質問通知がスマホとWatch（Wear OS標準の通知ブリッジ経由、Watch側コード不要）の両方に届き、バイブレーションと承認/拒否/選択肢ボタンが機能する
 * 通知のボタン操作がサーバーまで届き、`requests`テーブルが正しく`allowed`/`answered`に遷移する
 * 期限切れ（120秒）の要求が承認/回答できないこと
+* **`Stop` Hookが本物のClaude Codeイベントから自動発火する**こと。Ubuntu機で`install_hooks.py`を実行したあと、（Claude Codeの再起動なしで）応答ごとに`POST /api/v1/hooks/assistant-message`が飛ぶのを確認した
+* **`stop.py`が実物のtranscript JSONLをパースできる**こと。651KBの実セッションログに対して直近のassistantターンのテキストを正しく抽出できた——`type`/`message.content`のブロック構造の想定は実データと一致している
+* `assistant.message`が接続中の実機スマホまで届くこと（`delivered: 1`）。`requests`テーブルに行を作らないことも実DB（52行中`assistant.message`は0行）で確認
 
 ### 未検証（Ubuntu機側で確認すべきこと）
 
 * **`terminal.send_text`が実際にtmux経由でClaude Codeへ文字を打ち込むか**（このリポジトリの開発・検証はtmuxの無いWindows機で行ったため、`CLAUDE_NOT_RUNNING`が返ることまでしか確認できていない）
 * `claude-hooks/permission_request.py`・`notification.py`が本物のClaude Code Hookイベントから正しく呼ばれるか（公式Hookスキーマは推測に基づくため要突き合わせ、仕様11章項目11）
+* **`assistant.message`が実際にWatchの画面に出るか。** サーバー→スマホまでは上記の通り実機で確認済みだが、`NotificationHelper.notifyAssistantMessage`を入れた**APKをまだビルド・インストールしていない**ため、現状スマホは受信したエンベロープを黙って捨てている（古いAPKの`handleIncomingText`に`assistant.message`の分岐が無い）。**残作業はAPKの再ビルドとインストールのみ**
 * PC一覧・要求詳細・設定画面、Room、ACK再送、複数PC対応は未実装（仕様10章の一部）
 * ペアリングはこの端末から直接`pair/start`→`pair/complete`を呼ぶ簡易フロー。QRコード読み取りは未実装

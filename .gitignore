@@ -6,6 +6,7 @@ __pycache__/
 
 # Runtime data (SQLite DB is generated on first run)
 data/*.db
+data/*.log
 
 # Claude Code hook local config (copy from config.example.yaml)
 claude-hooks/config.yaml

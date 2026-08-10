@@ -88,6 +88,23 @@ class QuestionHookEvent(BaseModel):
     choices: List[dict[str, str]] = Field(default_factory=list)
 
 
+class AssistantMessageHookEvent(BaseModel):
+    """Raw event forwarded by the Claude Code Stop hook script — the text
+    Claude just finished replying with. Unknown fields are preserved
+    (spec 8.1)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    sessionId: Optional[str] = None
+    text: str
+    workingDirectory: str = ""
+
+
+class BroadcastResponse(BaseModel):
+    status: str
+    delivered: int
+
+
 class PromptSubmitRequest(BaseModel):
     text: str
     source: str = "phone"

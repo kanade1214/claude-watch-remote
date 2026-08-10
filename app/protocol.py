@@ -15,6 +15,7 @@ MessageType = Literal[
     "question.request",
     "question.response",
     "prompt.submit",
+    "assistant.message",
     "action.result",
     "heartbeat",
 ]
@@ -81,6 +82,21 @@ class PromptSubmitPayload(BaseModel):
     text: str
     source: Literal["watch_voice", "watch_quick", "phone", "recent"] = "phone"
     clientRequestId: str = Field(default_factory=new_id)
+
+
+class AssistantMessagePayload(BaseModel):
+    """Claude's reply text, pushed out for display only.
+
+    Unlike permission/question requests this is one-way: there is no
+    requestId and nothing for the user to resolve. `text` is already
+    truncated for a watch-sized screen; `fullLength` keeps the original
+    character count so the UI can say how much was cut.
+    """
+
+    text: str
+    truncated: bool = False
+    fullLength: int = 0
+    workingDirectory: str = ""
 
 
 class ActionResultPayload(BaseModel):

@@ -110,6 +110,10 @@ class RelayConnectionService : Service() {
                 addPendingRequest(envelope)
                 NotificationHelper.notifyQuestionRequest(this, envelope)
             }
+            // Display-only: nothing to add to pendingRequests, nothing to
+            // resolve — the notification (bridged to the Watch by Wear OS) is
+            // the whole feature.
+            "assistant.message" -> NotificationHelper.notifyAssistantMessage(this, envelope)
             "action.result" -> {
                 _lastActionResult.value = envelope
                 scope.launch { wearableBridge.sendActionResultToWatch(envelope) }

@@ -23,6 +23,7 @@ HOOKS_DIR = Path(__file__).resolve().parent
 HOOK_ENTRIES = {
     "PermissionRequest": HOOKS_DIR / "permission_request.py",
     "Notification": HOOKS_DIR / "notification.py",
+    "Stop": HOOKS_DIR / "stop.py",
 }
 
 
