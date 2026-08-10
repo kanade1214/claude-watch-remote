@@ -1,6 +1,7 @@
 package com.example.claudecoderemote.android.wearable
 
 import android.content.Context
+import android.util.Log
 import com.google.android.gms.tasks.Tasks
 import com.google.android.gms.wearable.DataClient
 import com.google.android.gms.wearable.MessageClient
@@ -9,6 +10,8 @@ import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
 import org.json.JSONArray
 import org.json.JSONObject
+
+private const val TAG = "WearableBridge"
 
 /**
  * Phone -> Watch side of the Wear OS Data Layer bridge (spec section 6.1).
@@ -31,7 +34,14 @@ class WearableBridge(context: Context) {
             dataMap.putString(REQUESTS_FIELD, array.toString())
             dataMap.putLong(UPDATED_AT_FIELD, System.currentTimeMillis())
         }
-        dataClient.putDataItem(request.asPutDataRequest().setUrgent())
+        try {
+            val nodes = Tasks.await(nodeClient.connectedNodes)
+            Log.d(TAG, "syncPendingRequests: connectedNodes=${nodes.map { "${it.displayName}(${it.id})" }}")
+            val result = Tasks.await(dataClient.putDataItem(request.asPutDataRequest().setUrgent()))
+            Log.d(TAG, "syncPendingRequests: putDataItem OK uri=${result.uri}")
+        } catch (e: Exception) {
+            Log.e(TAG, "syncPendingRequests: FAILED", e)
+        }
     }
 
     fun sendActionResultToWatch(envelope: JSONObject): Boolean =
@@ -43,11 +53,14 @@ class WearableBridge(context: Context) {
     private fun sendMessage(path: String, payload: ByteArray): Boolean {
         return try {
             val nodes = Tasks.await(nodeClient.connectedNodes)
+            Log.d(TAG, "sendMessage($path): connectedNodes=${nodes.map { "${it.displayName}(${it.id})" }}")
             for (node in nodes) {
                 Tasks.await(messageClient.sendMessage(node.id, path, payload))
             }
+            Log.d(TAG, "sendMessage($path): sent to ${nodes.size} node(s)")
             nodes.isNotEmpty()
         } catch (e: Exception) {
+            Log.e(TAG, "sendMessage($path): FAILED", e)
             false
         }
     }

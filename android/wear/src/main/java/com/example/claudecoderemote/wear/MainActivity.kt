@@ -9,12 +9,15 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.lifecycleScope
 import com.example.claudecoderemote.wear.network.WatchDataListener
 import com.example.claudecoderemote.wear.network.WatchMessageListener
 import com.example.claudecoderemote.wear.ui.MainScreen
 import com.example.claudecoderemote.wear.ui.theme.ClaudeCodeRemoteWearTheme
 import com.example.claudecoderemote.wear.viewmodel.MainViewModel
 import com.google.android.gms.wearable.Wearable
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
@@ -40,6 +43,13 @@ class MainActivity : ComponentActivity() {
 
         Wearable.getDataClient(this).addListener(dataListener)
         Wearable.getMessageClient(this).addListener(messageListener)
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val current = WatchDataListener.fetchCurrent(this@MainActivity)
+            if (current.isNotEmpty()) {
+                viewModel.onPendingRequestsChanged(current)
+            }
+        }
 
         setContent {
             ClaudeCodeRemoteWearTheme {
