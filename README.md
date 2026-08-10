@@ -52,7 +52,7 @@ WS   /ws/mobile
 
 `/api/v1/hooks/permission` と `/api/v1/hooks/question` は要求を作成して即座に `{"decision": "pending", "requestId": ...}` を返します。Hookスクリプトは `GET /api/v1/requests/{id}` をポーリングして解決を待ちます（仕様の同期待ち擬似コードをDB駆動のポーリングに置き換えたものです）。
 
-`/api/v1/hooks/assistant-message` は表示専用なので、他の2つと違って `requests` テーブルに行を作らず（承認も期限切れも無い）、接続中デバイスへ配信した時点で `{"status": "broadcast", "delivered": <接続数>}` を返します。Hookスクリプトはポーリングしません。本文は時計の画面に合わせて既定500文字で切り詰められます（`CLAUDE_WATCH_MESSAGE_MAX_CHARS` で変更可、切り詰めた場合は `truncated` と元の文字数 `fullLength` が付きます）。
+`/api/v1/hooks/assistant-message` は表示専用なので、他の2つと違って `requests` テーブルに行を作らず（承認も期限切れも無い）、接続中デバイスへ配信した時点で `{"status": "broadcast", "delivered": <接続数>}` を返します。Hookスクリプトはポーリングしません。本文は既定2000文字で切り詰められます（`CLAUDE_WATCH_MESSAGE_MAX_CHARS` で変更可。**この値の変更はサーバー再起動だけで反映され、APKの再ビルドは要りません**。切り詰めた場合は `truncated` と元の文字数 `fullLength` が付きます）。上限は5120文字——Androidが`Notification.MAX_CHARSEQUENCE_LENGTH`でCharSequenceを切るため、それ以上はこちらで送ってもプラットフォーム側で捨てられます。
 
 `POST /api/v1/prompts` と `WS /ws/mobile` はペアリング済みデバイスの認証（`Authorization: Bearer <deviceToken>` またはWebSocketの `?token=` クエリ）が必要です。
 
@@ -118,7 +118,7 @@ python claude-hooks/install_hooks.py             # ~/.claude/settings.json へ�
   * `data/DeviceCredentialStore.kt` — `EncryptedSharedPreferences`（Keystore裏付け）でPCのURLとデバイストークンを保存（仕様13.2）
   * `network/RelayApi.kt` — `pair/start` → `pair/complete` → `prompts` の新REST API
   * `network/WebSocketClient.kt` — `/ws/mobile?token=...` への接続、エンベロープ送受信
-  * `service/RelayConnectionService.kt` — WebSocket接続を保持するForeground Service（仕様10.2）。ここが`permission.request`/`question.request`受信の起点
+  * `service/RelayConnectionService.kt` — WebSocket接続を保持するForeground Service（仕様10.2）。ここが`permission.request`/`question.request`/`assistant.message`受信の起点。**切断時は指数バックオフ（1秒→最大60秒）で自動再接続する**——OkHttpは切れたWebSocketを勝手に張り直さないので、これが無いとサーバー再起動や一瞬の電波断だけでServiceが生きたまま無言で配信を止めてしまう（実際に踏んだ）
   * `notifications/NotificationHelper.kt` / `NotificationActionReceiver.kt` — 承認要求・質問を**バイブレーション付きの通知**として表示し、通知の承認/拒否/選択肢ボタンから直接応答できる（仕様5.6/10.3）。高危険度要求は通知にワンタップ承認ボタンを出さない（仕様12章）。Claudeの応答（`assistant.message`）は別チャンネル「Claudeの応答」で`BigTextStyle`表示。承認要求と同じく`IMPORTANCE_HIGH`＋バイブありで、セッションごとに1枠を上書きするので通知が積み上がらない。**`setOnlyAlertOnce`は意図的に付けていない**——1枠を使い回す設計なので、付けると2回目以降の応答が無音で差し替わるだけになり、気づけなくなる。チャンネルの重要度・バイブは作成後に変更できないため、挙動を変えるときはチャンネルIDを更新して旧IDを`deleteNotificationChannel`する（`CHANNEL_ASSISTANT_RETIRED`）
   * `wearable/WearableBridge.kt` / `WearableCommandProcessor.kt` — 保留要求を`DataClient`の`/state/pending-requests`でWatchアプリ内表示用に同期し、Watchアプリからの`/watch/action`・`/watch/prompt`をPCへ中継（アプリ内のフォールバック画面用。主経路は下記の通知）
   * `ui/MainScreen.kt` — ペアリング画面＋保留要求一覧（フォールバック表示）

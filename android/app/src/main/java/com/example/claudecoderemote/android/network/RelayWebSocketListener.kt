@@ -9,7 +9,8 @@ import okio.ByteString
 class RelayWebSocketListener(
     private val onOpenCallback: () -> Unit = {},
     private val onMessageCallback: (String) -> Unit = {},
-    private val onFailureCallback: (String) -> Unit = {}
+    private val onFailureCallback: (String) -> Unit = {},
+    private val onClosedCallback: () -> Unit = {}
 ) : WebSocketListener() {
     override fun onOpen(webSocket: WebSocket, response: Response) {
         Log.d("RelayWebSocket", "Connected")
@@ -29,6 +30,12 @@ class RelayWebSocketListener(
     override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
         webSocket.close(code, reason)
         Log.d("RelayWebSocket", "Closing: $code / $reason")
+    }
+
+    /** A clean close still needs reconnecting — a server restart looks like this. */
+    override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+        Log.d("RelayWebSocket", "Closed: $code / $reason")
+        onClosedCallback()
     }
 
     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {

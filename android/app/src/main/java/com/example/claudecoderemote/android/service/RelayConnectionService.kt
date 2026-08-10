@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -35,6 +36,10 @@ class RelayConnectionService : Service() {
     private lateinit var credentialStore: DeviceCredentialStore
     private var client: RelayWebSocketClient? = null
     private val scope = CoroutineScope(Dispatchers.IO + Job())
+    private var reconnectJob: Job? = null
+    private var reconnectAttempt = 0
+    @Volatile private var reconnectPending = false
+    @Volatile private var stopped = false
 
     override fun onCreate() {
         super.onCreate()
@@ -76,16 +81,60 @@ class RelayConnectionService : Service() {
         val token = credentialStore.deviceToken
         if (baseUrl == null || token == null || client != null) return
 
+        stopped = false
         val listener = RelayWebSocketListener(
-            onOpenCallback = { updateStatus("接続済み") },
+            onOpenCallback = {
+                reconnectAttempt = 0
+                updateStatus("接続済み")
+            },
             onMessageCallback = { message -> handleIncomingText(message) },
-            onFailureCallback = { error -> updateStatus("WebSocket エラー: $error") }
+            onFailureCallback = { error ->
+                updateStatus("WebSocket エラー: $error")
+                scheduleReconnect()
+            },
+            onClosedCallback = {
+                updateStatus("切断されました")
+                scheduleReconnect()
+            }
         )
         client = RelayWebSocketClient(listener).also { it.connect(baseUrl, token) }
         updateStatus("接続中...")
     }
 
+    /**
+     * OkHttp does not retry a dropped WebSocket, so without this the service
+     * stays alive while silently delivering nothing — a PC agent restart or a
+     * brief loss of signal was enough to stop notifications for good. Backoff
+     * is capped so a PC that is off overnight does not turn the phone into a
+     * tight reconnect loop.
+     */
+    private fun scheduleReconnect() {
+        // Guard with a flag rather than reconnectJob?.isActive: closing the
+        // socket below makes OkHttp fire onClosed on its own thread, which
+        // re-enters here before the job exists.
+        if (stopped || reconnectPending) return
+        reconnectPending = true
+        client?.close()
+        client = null
+
+        val delayMillis = minOf(
+            RECONNECT_MAX_DELAY_MS,
+            RECONNECT_BASE_DELAY_MS shl minOf(reconnectAttempt, RECONNECT_MAX_SHIFT)
+        )
+        reconnectAttempt++
+        reconnectJob = scope.launch {
+            updateStatus("再接続待機中 (${delayMillis / 1000}秒)")
+            delay(delayMillis)
+            reconnectPending = false
+            connect()
+        }
+    }
+
     private fun disconnect() {
+        stopped = true
+        reconnectPending = false
+        reconnectJob?.cancel()
+        reconnectJob = null
         client?.close()
         client = null
         updateStatus("未接続")
@@ -143,6 +192,9 @@ class RelayConnectionService : Service() {
 
     companion object {
         private const val SERVICE_NOTIFICATION_ID = 1
+        private const val RECONNECT_BASE_DELAY_MS = 1_000L
+        private const val RECONNECT_MAX_DELAY_MS = 60_000L
+        private const val RECONNECT_MAX_SHIFT = 6
         private const val ACTION_SEND_RESPONSE = "com.example.claudecoderemote.android.SEND_RESPONSE"
         private const val ACTION_SEND_PROMPT = "com.example.claudecoderemote.android.SEND_PROMPT"
         private const val ACTION_STOP = "com.example.claudecoderemote.android.STOP"

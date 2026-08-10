@@ -146,10 +146,17 @@ object NotificationHelper {
             text
         }
 
+        // Which project this came from — the working directory's last segment
+        // is what distinguishes two Claude sessions at a glance on a watch.
+        val project = payload.optString("workingDirectory").trimEnd('/').substringAfterLast('/')
+
         val notification = NotificationCompat.Builder(context, CHANNEL_ASSISTANT)
             .setSmallIcon(android.R.drawable.ic_menu_view)
-            .setContentTitle("Claudeの応答")
+            .setContentTitle(if (project.isNotBlank()) "Claudeの応答 · $project" else "Claudeの応答")
             .setContentText(text)
+            .setSubText(if (project.isNotBlank()) project else null)
+            .setWhen(System.currentTimeMillis())
+            .setShowWhen(true)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)

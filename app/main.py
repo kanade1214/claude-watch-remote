@@ -44,7 +44,11 @@ from app.terminal import TmuxTerminalAdapter, validate_prompt_text
 DEFAULT_SESSION_ID = "default"
 DEFAULT_TMUX_SESSION = os.environ.get("CLAUDE_WATCH_TMUX_SESSION", "claude-remote")
 PERMISSION_TIMEOUT_SECONDS = int(os.environ.get("CLAUDE_WATCH_PERMISSION_TIMEOUT", "120"))
-ASSISTANT_MESSAGE_MAX_CHARS = int(os.environ.get("CLAUDE_WATCH_MESSAGE_MAX_CHARS", "500"))
+# Android truncates notification CharSequences at 5120 chars
+# (Notification.MAX_CHARSEQUENCE_LENGTH), so anything above that is dropped by
+# the platform rather than by us. Stay well under it: BigTextStyle scrolls on a
+# watch, but only so far before it stops being readable.
+ASSISTANT_MESSAGE_MAX_CHARS = int(os.environ.get("CLAUDE_WATCH_MESSAGE_MAX_CHARS", "2000"))
 PC_ID = os.environ.get("CLAUDE_WATCH_PC_ID") or f"pc-{uuid.uuid4().hex[:8]}"
 
 
